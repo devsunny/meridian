@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meridian-worker
+  namespace: meridian
+  labels: { app.kubernetes.io/name: meridian-worker, app.kubernetes.io/part-of: meridian }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels: { app.kubernetes.io/name: meridian-worker }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: meridian-worker, app.kubernetes.io/part-of: meridian }
+    spec:
+      serviceAccountName: meridian-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: worker
+          image: ghcr.io/REPLACE_ORG/meridian-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "meridian.engine.worker"]
+          envFrom:
+            - configMapRef: { name: meridian-config }
+            - secretRef: { name: meridian-secrets }
+          env:
+            - { name: MERIDIAN_SERVICE_NAME, value: meridian-worker }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "4", memory: 4Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: meridian-data }
+        - name: tmp
+          emptyDir: { sizeLimit: 4Gi }

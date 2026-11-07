@@ -1,0 +1,129 @@
+# Example: a production pipeline definition.
+# Applied through `configure` (kind=Pipeline), compiled to an Argo WorkflowTemplate by execution-bridge.
+apiVersion: orchestrate.edp.example/v1
+kind: Pipeline
+metadata:
+  name: finance-ar-aging-daily
+  tenant: acme
+  project: finance-analytics
+  labels:
+    domain: finance
+    criticality: tier1
+    cost_center: FIN-42
+spec:
+  description: "Daily AR aging from Box invoices, with quality gate and semantic publish."
+  owner: finance-data@acme.example
+  steward: controller@acme.example
+
+  schedule:
+    cron: "0 3 * * *"
+    timezone: America/New_York
+    catchup: one                 # none | one | all
+    concurrency: forbid          # allow | forbid | replace
+    maxActiveRuns: 1
+    jitterSeconds: 120
+    blackoutWindows:
+      - { start: "2026-12-24", end: "2026-12-26", timezone: America/New_York }
+    sla:
+      deadline: "07:00"          # local time, relative to logical_date
+      onMiss: escalate
+      escalateTo: [finance-data@acme.example, sre-oncall@acme.example]
+
+  defaults:
+    priority: 7                  # 0-9, higher = more important
+    timeoutSeconds: 7200
+    retries:
+      maxAttempts: 3
+      backoff: { baseSeconds: 60, factor: 2, maxSeconds: 900, jitter: true }
+      retryOn: [SYSTEM, TIMEOUT, RATE_LIMITED]   # never on DATA_QUALITY
+    podTemplate:
+      serviceAccount: edp-job-acme
+      nodeSelector: { edp/workload: batch }
+      tolerations:
+        - { key: spot, operator: Equal, value: "true", effect: NoSchedule }
+      resources:
+        requests: { cpu: "1", memory: 2Gi }
+        limits:   { cpu: "4", memory: 8Gi }
+
+  # DAG. `id` is stable across versions; renaming breaks lineage.
+  tasks:
+    - id: extract
+      type: ingestion
+      ingestionRef: acme-box-invoices
+      params:
+        since: "{{ .data_interval_start | date \"2006-01-02\" }}"
+        until: "{{ .data_interval_end | date \"2006-01-02\" }}"
+
+    - id: bronze_checks
+      type: quality
+      dependsOn: [extract]
+      suite: acme.finance.bronze_invoices
+      onFailure: fail
+
+    - id: silver_invoice_lines
+      type: dbt
+      dependsOn: [bronze_checks]
+      command:
+        - dbt
+        - run
+        - --select
+        - "tag:ar+"
+        - --vars
+        - '{"start_date": "{{ .data_interval_start | date \"2006-01-02\" }}"}'
+      env:
+        DBT_PROFILES_DIR: /etc/dbt
+      secrets:
+        - { name: dbt-trino, mount: /etc/dbt/.dbt }
+
+    - id: quality_gate
+      type: quality
+      dependsOn: [silver_invoice_lines]
+      suite: acme.finance.silver_invoice_lines
+      onFailure: fail
+
+    - id: gold_ar_aging
+      type: spark
+      dependsOn: [quality_gate]
+      image: registry.edp.example/jobs/ar-aging:1.4.2
+      mainApplicationFile: s3://edp-artifacts/acme/jobs/ar_aging.py
+      args:
+        - --date
+        - "{{ .data_interval_end | date \"2006-01-02\" }}"
+        - --mode
+        - overwrite-partition
+      sparkConf:
+        spark.sql.adaptive.enabled: "true"
+        spark.sql.shuffle.partitions: "400"
+        spark.dynamicAllocation.enabled: "true"
+        spark.dynamicAllocation.minExecutors: "2"
+        spark.dynamicAllocation.maxExecutors: "40"
+      resources:
+        requests: { cpu: "2", memory: 4Gi }
+        limits:   { cpu: "8", memory: 16Gi }
+
+    - id: publish
+      type: catalog
+      dependsOn: [gold_ar_aging]
+      datasets:
+        - urn: urn:edp:acme:finance:gold.ar_aging_daily
+          action: publish
+          contract: acme.finance.gold_ar_aging_daily
+      notify:
+        channels: [teams-finance-data]
+        on: [success, failure]
+
+  notifications:
+    onFailure:
+      - channel: teams-finance-data
+        mention: [finance-data@acme.example]
+    onSlaMiss:
+      - channel: pagerduty-finance
+        severity: P2
+
+  cost:
+    budgetUsdPerRun: 25
+    alertAtPercent: 80
+
+  lineage:
+    emit: true
+    columnLevel: true

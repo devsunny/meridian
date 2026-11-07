@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meridian-api
+  namespace: meridian
+  labels: { app.kubernetes.io/name: meridian-api, app.kubernetes.io/part-of: meridian }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: meridian-api }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: meridian-api, app.kubernetes.io/part-of: meridian }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: meridian-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app.kubernetes.io/name: meridian-api }
+      containers:
+        - name: api
+          image: ghcr.io/REPLACE_ORG/meridian-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ name: http, containerPort: 8000 }]
+          envFrom:
+            - configMapRef: { name: meridian-config }
+            - secretRef: { name: meridian-secrets }
+          env:
+            - { name: MERIDIAN_SERVICE_NAME, value: meridian-api }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: http }
+            initialDelaySeconds: 8
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health/live, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          startupProbe:
+            httpGet: { path: /health/live, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: meridian-data }
+        - name: tmp
+          emptyDir: { sizeLimit: 2Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meridian-api
+  namespace: meridian
+spec:
+  selector: { app.kubernetes.io/name: meridian-api }
+  ports:
+    - { name: http, port: 8000, targetPort: http }

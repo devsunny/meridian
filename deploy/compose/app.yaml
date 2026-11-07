@@ -1,0 +1,123 @@
+# Meridian local application stack
+# Usage:  docker compose -f deploy/compose/app.yaml up --build
+# Optional: profiles `obs` (OTel + Prometheus + Jaeger), `objectstore` (SeaweedFS S3)
+name: meridian
+
+x-app-env: &app-env
+  MERIDIAN_ENV: local
+  MERIDIAN_DATABASE_URL: postgresql+pg8000://meridian:meridian@postgres:5432/meridian
+  MERIDIAN_STORAGE_BACKEND: local
+  MERIDIAN_STORAGE_ROOT: /data/warehouse
+  MERIDIAN_LOG_DIR: /data/logs
+  MERIDIAN_FILE_ROOTS: /data
+  MERIDIAN_JWT_SECRET: ${MERIDIAN_JWT_SECRET:-local-only-change-me-in-production-32bytes}
+  MERIDIAN_DEMO_PASSWORD: ${MERIDIAN_DEMO_PASSWORD:-Meridian123!}
+  MERIDIAN_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+  MERIDIAN_OTEL_ENABLED: ${MERIDIAN_OTEL_ENABLED:-false}
+  MERIDIAN_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  MERIDIAN_LOG_LEVEL: INFO
+
+x-app-build: &app-build
+  context: ../..
+  dockerfile: services/platform-api/Dockerfile
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: meridian
+      POSTGRES_PASSWORD: meridian
+      POSTGRES_DB: meridian
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meridian -d meridian"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    build: *app-build
+    environment: *app-env
+    command: ["uvicorn", "meridian.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    ports: ["8000:8000"]
+    volumes: [appdata:/data]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    build: *app-build
+    environment:
+      <<: *app-env
+      MERIDIAN_SERVICE_NAME: meridian-worker
+      MERIDIAN_WORKER_CONCURRENCY: "4"
+    command: ["python", "-m", "meridian.engine.worker"]
+    volumes: [appdata:/data]
+    depends_on:
+      api: { condition: service_healthy }
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+
+  scheduler:
+    build: *app-build
+    environment:
+      <<: *app-env
+      MERIDIAN_SERVICE_NAME: meridian-scheduler
+    command: ["python", "-m", "meridian.engine.scheduler"]
+    volumes: [appdata:/data]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../../apps/web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
+    ports: ["3000:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    profiles: [obs]
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes: [../otel/app-config.yaml:/etc/otel/config.yaml:ro]
+    ports: ["4317:4317", "4318:4318", "8889:8889"]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [obs]
+    command: ["--config.file=/etc/prometheus/prometheus.yaml"]
+    volumes: [../prometheus/app-prometheus.yaml:/etc/prometheus/prometheus.yaml:ro]
+    ports: ["9090:9090"]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    profiles: [obs]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686"]
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.80
+    profiles: [objectstore]
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-master.volumeSizeLimitMB=1024"]
+    ports: ["8333:8333"]
+    volumes: [s3data:/data]
+
+volumes:
+  pgdata:
+  appdata:
+  s3data:

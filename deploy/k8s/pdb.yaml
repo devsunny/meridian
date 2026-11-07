@@ -1,0 +1,29 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: meridian-api
+  namespace: meridian
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: meridian-api }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: meridian-web
+  namespace: meridian
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: meridian-web }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: meridian-worker
+  namespace: meridian
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: meridian-worker }

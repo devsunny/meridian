@@ -1,0 +1,102 @@
+# Kueue: multi-tenant batch admission, quotas, fair sharing and preemption.
+# Kueue is the ONLY admission path into edp-jobs; Kyverno blocks direct pod creation.
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: spot
+spec:
+  nodeLabels:
+    karpenter.sh/capacity-type: spot
+  tolerations:
+    - { key: spot, operator: Equal, value: "true", effect: NoSchedule }
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: on-demand
+spec:
+  nodeLabels:
+    karpenter.sh/capacity-type: on-demand
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: WorkloadPriorityClass
+metadata:
+  name: tier1-sla
+value: 900
+description: "SLA-bearing production pipelines; may preempt backfills."
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: WorkloadPriorityClass
+metadata:
+  name: backfill
+value: 100
+description: "Backfills and ad-hoc exploration; preemptible."
+---
+# Gold tier: guaranteed on-demand slice + large spot burst, may borrow from the cohort.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: tenant-gold
+spec:
+  namespaceSelector:
+    matchLabels:
+      edp.example/quota-class: gold
+  cohort: shared-batch
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: on-demand
+          resources:
+            - { name: cpu, nominalQuota: 80 }
+            - { name: memory, nominalQuota: 200Gi }
+        - name: spot
+          resources:
+            - { name: cpu, nominalQuota: 400 }
+            - { name: memory, nominalQuota: 1Ti }
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+    borrowWithinCohort:
+      policy: LowerPriority
+      maxPriorityThreshold: 500
+  queueingStrategy: BestEffortFIFO
+  stopPolicy: None
+---
+# Standard tier: spot only, no reservation, borrows leftovers.
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: tenant-standard
+spec:
+  namespaceSelector:
+    matchLabels:
+      edp.example/quota-class: standard
+  cohort: shared-batch
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: spot
+          resources:
+            - { name: cpu, nominalQuota: 1200 }
+            - { name: memory, nominalQuota: 3Ti }
+  preemption:
+    withinClusterQueue: LowerPriority
+    reclaimWithinCohort: Any
+  queueingStrategy: BestEffortFIFO
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: acme-gold
+  namespace: tenant-acme
+spec:
+  clusterQueue: tenant-gold
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: acme-standard
+  namespace: tenant-acme
+spec:
+  clusterQueue: tenant-standard

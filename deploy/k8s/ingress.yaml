@@ -1,0 +1,38 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: meridian
+  namespace: meridian
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: 100m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [meridian.example.com]
+      secretName: meridian-tls
+  rules:
+    - host: meridian.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: { name: meridian-api, port: { number: 8000 } }
+          - path: /health
+            pathType: Prefix
+            backend:
+              service: { name: meridian-api, port: { number: 8000 } }
+          - path: /docs
+            pathType: Prefix
+            backend:
+              service: { name: meridian-api, port: { number: 8000 } }
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: meridian-web, port: { number: 3000 } }

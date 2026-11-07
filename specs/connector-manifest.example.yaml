@@ -1,0 +1,147 @@
+# Connector manifest — the contract every connector image must satisfy.
+# Validated at build time, at publish time, and at runtime (defence in depth).
+apiVersion: connect.edp.example/v1
+kind: ConnectorManifest
+metadata:
+  name: box
+  displayName: Box
+  version: 2.3.0
+  vendor: edp-first-party          # edp-first-party | airbyte-adapter | partner
+  icon: box.svg
+  docs: https://docs.edp.example/connectors/box
+
+spec:
+  category: SaaS content
+  description: >
+    Ingests files and folders from Box with delta detection, ACL propagation and
+    Box Governance/Shield label harvesting.
+
+  # --- Capabilities the runtime uses to build the UI and validation ---
+  capabilities:
+    discovery: true
+    schemaInference: true
+    incremental: true
+    deltaToken: true
+    deletes: tombstones
+    sourceAcl: true
+    classificationHints: true
+    binaryContent: true
+    structuredRecords: false
+    pushEvents: true
+    resumable: true
+
+  modes:
+    - batch
+    - scheduled
+    - event            # Box webhooks -> platform ingestion trigger
+
+  resources:
+    - kind: folder
+      selectable: true
+      children: [folder, file]
+    - kind: file
+      selectable: true
+      filters: ["name:*.pdf", "name:*.docx", "name:*.csv", "name:*.xlsx"]
+
+  # --- Authentication ---
+  auth:
+    type: oauth2
+    flows: [authorization_code, client_credentials]
+    scopes: ["root_readwrite"]
+    tokenEndpoint: https://api.box.com/oauth2/token
+    refresh: true
+    perUser: true                  # tokens are stored per (tenant, user, connection)
+    adminConsent: true
+    docs: https://developer.box.com/guides/authentication/
+
+  # --- Runtime sandbox ---
+  runtime:
+    image: registry.edp.example/connectors/box:2.3.0
+    command: ["/edp/run", "--spec", "/etc/edp/run.json"]
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+      limits:   { cpu: "2",  memory: 4Gi }
+      ephemeralStorage: 10Gi
+    timeoutSeconds: 14400
+    concurrency:
+      default: 4
+      max: 16
+    egress:
+      - host: api.box.com
+        port: 443
+      - host: upload.box.com
+        port: 443
+      - host: dl.boxcloud.com
+        port: 443
+    mounts:
+      - { name: credentials, path: /var/run/secrets/edp, mode: "0400" }
+    checkpoint:
+      intervalSeconds: 30
+      maxBytesBetween: 104857600
+
+  # --- Rate limits declared so the scheduler can throttle before the API says 429 ---
+  limits:
+    requestsPerSecond: 10
+    burst: 20
+    honorRetryAfter: true
+    maxObjectBytes: 53687091200    # 50 GiB
+    maxRecordsPerBatch: 50000
+
+  # --- Incremental strategy ---
+  changeDetection:
+    strategies:
+      - name: enterprise_events
+        default: true
+        description: "Box Enterprise Events stream; cursor persisted per connection."
+        cursorField: stream_position
+      - name: modified_since
+        description: "Fallback when events scope is unavailable."
+        cursorField: modified_at
+        overlap: 15m
+
+  # --- Governance hooks ---
+  governance:
+    aclMapping:
+      principals: [user, group]
+      permission: read
+      fetchOn: [discover, ingest]
+      aclHashFields: [item_id, user_id, group_id, role]
+    classificationHints:
+      - { field: item.name, patterns: ["*invoice*", "*ssn*", "*payroll*"], suggestedTag: CONFIDENTIAL }
+    piiSampling:
+      enabled: true
+      maxFilesPerRun: 20
+      maxBytesPerFile: 1048576
+    dataResidency:
+      supportedRegions: [us-east-1, eu-west-1]
+
+  # --- Observability contract ---
+  telemetry:
+    metrics:
+      - edp_connector_bytes_total
+      - edp_connector_records_total
+      - edp_connector_requests_total
+      - edp_connector_errors_total
+      - edp_connector_throttled_total
+    spans: [discover, read_resource, fetch_file, emit_lineage]
+    logFields: [run_id, tenant_id, connection_id, resource_id, phase, error_code]
+
+  # --- Test fixtures required before publishing to the catalog ---
+  tests:
+    fixtures: s3://edp-connector-fixtures/box/2.3.0/
+    cases:
+      - name: discover_root_lists_folders
+      - name: delta_returns_only_changed_files
+      - name: acl_snapshot_maps_groups
+      - name: resume_after_pod_kill_has_no_duplicates
+      - name: rate_limit_429_is_retried_with_backoff
+      - name: revoked_token_surfaces_actionable_error
+
+  # --- Support metadata surfaced in the UI ---
+  support:
+    owner: connect-team@edp.example
+    sla: "business-hours"
+    knownIssues:
+      - "Box Governance labels require the governance scope; ACL sync degrades gracefully without it."
+      - "Files > 50 GiB are rejected by the Box API."
+    changelog: https://docs.edp.example/connectors/box/changelog

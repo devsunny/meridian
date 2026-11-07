@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meridian-platform"
+version = "0.1.0"
+description = "Meridian enterprise data platform control plane, scheduler and workers."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Meridian Platform" }]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.32,<1",
+  "sqlalchemy>=2.0.36,<3",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.6,<3",
+  "PyJWT>=2.10,<3",
+  "cryptography>=43,<47",
+  "httpx>=0.28,<1",
+  "croniter>=6,<7",
+  "tzdata>=2024.2",
+  "python-multipart>=0.0.17,<1",
+  "openpyxl>=3.1,<4",
+  "pypdf>=5.1,<7",
+  "python-docx>=1.1,<2",
+  "defusedxml>=0.7,<1",
+  "boto3>=1.35,<2",
+  "duckdb>=1.1,<2",
+  "pg8000>=1.31,<2",
+  "edp-connector-sdk",
+  "opentelemetry-api>=1.28,<2",
+  "opentelemetry-sdk>=1.28,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.28,<2",
+  "opentelemetry-instrumentation-fastapi>=0.49b0,<1",
+  "opentelemetry-instrumentation-sqlalchemy>=0.49b0,<1",
+  "opentelemetry-instrumentation-httpx>=0.49b0,<1",
+]
+
+[project.optional-dependencies]
+sftp = ["paramiko>=3.5,<5"]
+mongo = ["pymongo>=4.10,<5"]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+  "ruff>=0.8,<1",
+  "mypy>=1.13,<2",
+]
+
+[project.scripts]
+meridian = "meridian.cli:main"
+
+[tool.uv.sources]
+edp-connector-sdk = { path = "../../packages/connector-sdk", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meridian"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

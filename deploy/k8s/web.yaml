@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meridian-web
+  namespace: meridian
+  labels: { app.kubernetes.io/name: meridian-web, app.kubernetes.io/part-of: meridian }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: meridian-web }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: meridian-web, app.kubernetes.io/part-of: meridian }
+    spec:
+      serviceAccountName: meridian-web
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          # Build with: --build-arg NEXT_PUBLIC_API_URL=https://meridian.example.com
+          image: ghcr.io/REPLACE_ORG/meridian-web:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ name: http, containerPort: 3000 }]
+          env:
+            - { name: NODE_ENV, value: production }
+            - { name: NEXT_TELEMETRY_DISABLED, value: "1" }
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: next-cache, mountPath: /app/.next/cache }
+            - { name: tmp, mountPath: /tmp }
+          readinessProbe:
+            httpGet: { path: /login, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /login, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: next-cache
+          emptyDir: { sizeLimit: 1Gi }
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meridian-web
+  namespace: meridian
+spec:
+  selector: { app.kubernetes.io/name: meridian-web }
+  ports:
+    - { name: http, port: 3000, targetPort: http }

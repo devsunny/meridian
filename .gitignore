@@ -1,0 +1,34 @@
+# Local data and tool caches
+.data/
+.uv-cache/
+.npm-cache/
+.pytest_cache/
+.test-data/
+**/__pycache__/
+*.pyc
+.venv/
+services/platform-api/.venv/
+services/platform-api/.pytest_cache/
+
+# Web
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/.env.local
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+deploy/compose/.env
+!deploy/compose/.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Python tooling cache
+.ruff_cache/

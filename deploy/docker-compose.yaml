@@ -1,0 +1,211 @@
+# Meridian — local development stack (Docker Compose)
+#
+# Goal: the full control-plane loop on a laptop, with no cloud dependency.
+#   make up      -> core stack (postgres, redis, minio, iceberg, trino, temporal, keycloak, opa)
+#   make obs     -> add Prometheus + Grafana + OTel collector
+#   make aws     -> add LocalStack (Secrets Manager, SQS, KMS emulation)
+#
+# Images are intentionally not pinned to exact patch versions here; CI pins digests and
+# Renovate keeps them current. Pin before using this as anything other than a dev stack.
+
+name: meridian
+
+x-common-env: &common-env
+  EDP_ENV: local
+  EDP_LOG_LEVEL: debug
+  EDP_POSTGRES_DSN: postgresql://edp:edp@postgres:5432/edp
+  EDP_REDIS_URL: redis://redis:6379/0
+  EDP_S3_ENDPOINT: http://minio:9000
+  EDP_S3_ACCESS_KEY: minioadmin
+  EDP_S3_SECRET_KEY: minioadmin
+  EDP_ICEBERG_REST_URI: http://iceberg-rest:8181
+  EDP_TEMPORAL_HOST: temporal:7233
+  EDP_OIDC_ISSUER: http://keycloak:8080/realms/meridian
+  EDP_OPA_URL: http://opa:8181
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_SERVICE_NAME: edp-local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: edp
+      POSTGRES_PASSWORD: edp
+      POSTGRES_DB: edp
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edp -d edp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: { condition: service_started }
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do echo 'waiting for minio'; sleep 2; done;
+      mc mb -p local/edp-raw local/edp-lake local/edp-staging local/edp-artifacts local/edp-quarantine local/warehouse || true;
+      mc anonymous set none local/edp-lake || true;
+      echo 'buckets ready'"
+    restart: "no"
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest:0.6.0
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+    ports: ["8181:8181"]
+
+  trino:
+    image: trinodb/trino:latest
+    depends_on:
+      iceberg-rest: { condition: service_started }
+      postgres: { condition: service_healthy }
+    ports: ["8080:8080"]
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx2G"
+
+  temporal:
+    image: temporalio/auto-setup:1.25
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: edp
+      POSTGRES_PWD: edp
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["7233:7233"]
+
+  temporal-ui:
+    image: temporalio/ui:2.26
+    depends_on: [temporal]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports: ["8088:8080"]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME_STRICT: "false"
+    ports: ["8081:8080"]
+    volumes:
+      - ./keycloak/meridian-realm.json:/opt/keycloak/data/import/meridian-realm.json:ro
+
+  opa:
+    image: openpolicyagent/opa:latest
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - --log-level=debug
+      - /policies
+    ports: ["8182:8181"]
+    volumes:
+      - ../policies:/policies:ro
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/config.yaml:/etc/otel/config.yaml:ro
+    ports: ["4317:4317", "4318:4318"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: [obs]
+    command: ["--config.file=/etc/prometheus/prometheus.yaml"]
+    volumes:
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [obs]
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports: ["3000:3000"]
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["8025:8025", "1025:1025"]
+
+  localstack:
+    image: localstack/localstack:latest
+    profiles: [aws]
+    environment:
+      SERVICES: secretsmanager,sqs,kms,s3
+      DEBUG: "0"
+    ports: ["4566:4566"]
+
+  # The platform services are run from source (`make dev`) so code changes are live-reloaded.
+  # Uncomment to run them as containers instead.
+  #
+  # api:
+  #   build: ../services/platform-api
+  #   environment: *common-env
+  #   ports: ["8000:8000"]
+  #   depends_on: [postgres, redis, temporal]
+  #   command: ["uvicorn", "edp_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+  #
+  # web:
+  #   build: ../web
+  #   environment:
+  #     NEXT_PUBLIC_API_URL: http://localhost:8000
+  #     NEXTAUTH_URL: http://localhost:3000
+  #   ports: ["3000:3000"]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

@@ -1,0 +1,86 @@
+# Default-deny for tenant namespaces, with explicit ingress from the gateway and
+# egress only to the control plane, DNS and approved source endpoints.
+#
+# NOTE: FQDN-based egress (toFQDNs) requires Cilium. On VPC CNI alone, use CIDR rules
+# for VPC endpoints plus a NAT gateway with a static egress IP that customers allowlist.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: tenant-acme
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: tenant-acme
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-control-plane
+  namespace: tenant-acme
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: edp-system }
+      ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 7233 }   # Temporal frontend
+        - { protocol: TCP, port: 4317 }   # OTel collector
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-s3-vpc-endpoint
+  namespace: tenant-acme
+spec:
+  podSelector:
+    matchLabels: { edp.example/role: connector }
+  policyTypes: [Egress]
+  egress:
+    # Replace with the S3 gateway endpoint prefix list for your VPC.
+    - to:
+        - ipBlock:
+            cidr: 10.20.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: connector-egress-fqdn
+  namespace: tenant-acme
+spec:
+  endpointSelector:
+    matchLabels: { edp.example/role: connector }
+  egress:
+    - toFQDNs:
+        - matchName: api.box.com
+        - matchName: upload.box.com
+        - matchName: dl.boxcloud.com
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+    - toFQDNs:
+        - matchPattern: "*.sharepoint.com"
+        - matchPattern: "*.onedrive.com"
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }

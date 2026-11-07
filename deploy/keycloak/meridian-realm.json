@@ -1,0 +1,97 @@
+{
+  "realm": "meridian",
+  "enabled": true,
+  "displayName": "Meridian (local)",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 28800,
+  "roles": {
+    "realm": [
+      { "name": "PlatformAdmin" },
+      { "name": "TenantAdmin" },
+      { "name": "DataSteward" },
+      { "name": "DataEngineer" },
+      { "name": "Analyst" },
+      { "name": "Auditor" }
+    ]
+  },
+  "groups": [
+    { "name": "acme-finance", "realmRoles": ["Analyst"] },
+    { "name": "acme-engineering", "realmRoles": ["DataEngineer"] },
+    { "name": "acme-data-office", "realmRoles": ["DataSteward"] },
+    { "name": "platform", "realmRoles": ["PlatformAdmin"] }
+  ],
+  "clients": [
+    {
+      "clientId": "edp-web",
+      "name": "Meridian web",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:3000/*", "http://localhost:8000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "attributes": { "pkce.code.challenge.method": "S256" }
+    },
+    {
+      "clientId": "edp-api",
+      "name": "Meridian API (machine)",
+      "publicClient": false,
+      "secret": "local-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true
+    },
+    {
+      "clientId": "edp-mcp",
+      "name": "Meridian MCP server",
+      "publicClient": false,
+      "secret": "local-mcp-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "username": "priya.analyst",
+      "enabled": true,
+      "email": "priya.analyst@acme.example",
+      "firstName": "Priya",
+      "lastName": "Analyst",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/acme-finance"],
+      "attributes": { "tenant": ["acme"], "project": ["finance-analytics"] }
+    },
+    {
+      "username": "dana.engineer",
+      "enabled": true,
+      "email": "dana.engineer@acme.example",
+      "firstName": "Dana",
+      "lastName": "Engineer",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/acme-engineering"],
+      "attributes": { "tenant": ["acme"], "project": ["platform"] }
+    },
+    {
+      "username": "marcus.steward",
+      "enabled": true,
+      "email": "marcus.steward@acme.example",
+      "firstName": "Marcus",
+      "lastName": "Steward",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/acme-data-office"],
+      "attributes": { "tenant": ["acme"] }
+    },
+    {
+      "username": "alex.admin",
+      "enabled": true,
+      "email": "alex.admin@acme.example",
+      "firstName": "Alex",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "password", "temporary": false }],
+      "groups": ["/platform"],
+      "attributes": { "tenant": ["platform"] }
+    }
+  ],
+  "defaultRoles": ["offline_access", "uma_authorization"]
+}

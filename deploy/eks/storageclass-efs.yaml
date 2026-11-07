@@ -1,0 +1,14 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: REPLACE_EFS_FILESYSTEM_ID
+  directoryPerms: "700"
+  gidRangeStart: "10001"
+  gidRangeEnd: "10001"
+  basePath: /meridian
+reclaimPolicy: Retain
+volumeBindingMode: Immediate

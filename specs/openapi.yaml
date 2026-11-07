@@ -1,0 +1,790 @@
+openapi: 3.1.0
+info:
+  title: Meridian Data Platform API
+  version: 0.1.0
+  description: >-
+    Core control-plane API. All mutating calls are authorized by ABAC policy and produce
+    an audit event. Long-running operations return 202 with an addressable operation resource.
+  contact:
+    name: Platform Engineering
+    email: platform@edp.example
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.dev.edp.example/v1
+    description: Development
+  - url: https://api.edp.example/v1
+    description: Production
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Connections
+  - name: Ingestion
+  - name: Runs
+  - name: Catalog
+  - name: Governance
+
+paths:
+  /connections:
+    get:
+      tags: [Connections]
+      operationId: listConnections
+      summary: List connections in the caller's tenant
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: type
+          in: query
+          schema: { type: string, examples: [box] }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ConnectionStatus' }
+      responses:
+        '200':
+          description: A page of connections
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Connection' }
+                  nextCursor: { type: [string, 'null'] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Connections]
+      operationId: createConnection
+      summary: Create a connection (never stores the secret itself)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionCreate' }
+      responses:
+        '201':
+          description: Created
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /connections/{connectionId}:
+    parameters:
+      - $ref: '#/components/parameters/ConnectionId'
+    get:
+      tags: [Connections]
+      operationId: getConnection
+      summary: Get a connection
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Connection' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Connections]
+      operationId: deleteConnection
+      summary: Delete a connection (blocked if referenced by an ingestion)
+      responses:
+        '204': { description: Deleted }
+        '409':
+          description: Connection is in use
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /connections/{connectionId}/test:
+    parameters:
+      - $ref: '#/components/parameters/ConnectionId'
+    post:
+      tags: [Connections]
+      operationId: testConnection
+      summary: Test reachability and credentials
+      responses:
+        '200':
+          description: Test result (synchronous, <= 10s)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionTest' }
+        '504':
+          description: Source did not respond in time
+
+  /connections/{connectionId}/discover:
+    parameters:
+      - $ref: '#/components/parameters/ConnectionId'
+    post:
+      tags: [Connections]
+      operationId: discoverConnection
+      summary: Start a discovery run (async)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rootPath: { type: string, examples: [/Invoices] }
+                maxDepth: { type: integer, minimum: 1, maximum: 10, default: 5 }
+                includeAcl: { type: boolean, default: true }
+      responses:
+        '202':
+          description: Discovery accepted
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+
+  /ingestions:
+    get:
+      tags: [Ingestion]
+      operationId: listIngestions
+      summary: List ingestion definitions
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: connectionId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Ingestion' }
+                  nextCursor: { type: [string, 'null'] }
+    post:
+      tags: [Ingestion]
+      operationId: createIngestion
+      summary: Create an ingestion definition
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IngestionCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ingestion' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /ingestions/{ingestionId}/runs:
+    parameters:
+      - name: ingestionId
+        in: path
+        required: true
+        schema: { type: string, pattern: '^ing_[A-Z0-9]{20,}$' }
+    post:
+      tags: [Ingestion]
+      operationId: startIngestionRun
+      summary: Trigger an ingestion run (async)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: [incremental, full]
+                  default: incremental
+                logicalDate:
+                  type: string
+                  format: date-time
+                  description: Overrides the schedule's logical date (backfill/replay).
+                force:
+                  type: boolean
+                  default: false
+                  description: Re-run even if the idempotency key already exists.
+      responses:
+        '202':
+          description: Run accepted
+          headers:
+            Location: { $ref: '#/components/headers/Location' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /runs:
+    get:
+      tags: [Runs]
+      operationId: listRuns
+      summary: List runs across ingestions and pipelines
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RunStatus' }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [ingestion, pipeline] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Run' }
+                  nextCursor: { type: [string, 'null'] }
+
+  /runs/{runId}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [Runs]
+      operationId: getRun
+      summary: Get run state, attempts and timings
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /runs/{runId}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [Runs]
+      operationId: cancelRun
+      summary: Request cancellation (idempotent)
+      responses:
+        '202':
+          description: Cancellation accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '409':
+          description: Run is already terminal
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /runs/{runId}/events:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [Runs]
+      operationId: streamRunEvents
+      summary: Server-sent events for run progress
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE frames of type state, progress, log, metric.
+
+  /assets:
+    get:
+      tags: [Catalog]
+      operationId: searchAssets
+      summary: Search or list catalog assets
+      parameters:
+        - name: q
+          in: query
+          description: Keyword + semantic search query
+          schema: { type: string, maxLength: 500 }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [dataset, document, dashboard, model] }
+        - name: domain
+          in: query
+          schema: { type: string }
+        - name: classification
+          in: query
+          schema: { $ref: '#/components/schemas/Classification' }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+                  nextCursor: { type: [string, 'null'] }
+                  facets:
+                    type: object
+                    additionalProperties: true
+
+  /datasets/{urn}:
+    parameters:
+      - name: urn
+        in: path
+        required: true
+        schema: { type: string }
+        description: URL-encoded asset URN, e.g. urn%3Aedp%3Aacme%3Afinance%3Agold.ar_aging_daily
+    get:
+      tags: [Catalog]
+      operationId: getDataset
+      summary: Dataset detail with schema, contract and freshness
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /datasets/{urn}/lineage:
+    parameters:
+      - name: urn
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Catalog]
+      operationId: getLineage
+      summary: Upstream and downstream lineage
+      parameters:
+        - name: direction
+          in: query
+          schema: { type: string, enum: [upstream, downstream, both], default: both }
+        - name: depth
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 10, default: 3 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items: { $ref: '#/components/schemas/LineageNode' }
+                  edges:
+                    type: array
+                    items: { $ref: '#/components/schemas/LineageEdge' }
+
+  /access-requests:
+    get:
+      tags: [Governance]
+      operationId: listAccessRequests
+      summary: List access requests visible to the caller
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [SUBMITTED, IN_REVIEW, APPROVED, DENIED, PROVISIONED, EXPIRED, REVOKED] }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessRequest' }
+                  nextCursor: { type: [string, 'null'] }
+    post:
+      tags: [Governance]
+      operationId: createAccessRequest
+      summary: Request time-bound, purpose-bound access
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRequestCreate' }
+      responses:
+        '201':
+          description: Submitted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /access-requests/{requestId}/decide:
+    parameters:
+      - name: requestId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Governance]
+      operationId: decideAccessRequest
+      summary: Approve or deny (approver only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, DENY] }
+                reason: { type: string, maxLength: 2000 }
+                expiresAt: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Decision recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    ConnectionId:
+      name: connectionId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^con_[A-Z0-9]{20,}$' }
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^run_[A-Z0-9]{20,}$' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 128 }
+    IfMatch:
+      name: If-Match
+      in: header
+      schema: { type: string }
+
+  headers:
+    ETag:
+      schema: { type: string }
+    Location:
+      schema: { type: string, format: uri }
+    RetryAfter:
+      schema: { type: integer }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated but not authorized
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Resource does not exist or is not visible to the caller
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: State conflict (idempotency, concurrency, dependency)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationError:
+      description: Request failed validation
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        traceId: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              code: { type: string }
+              message: { type: string }
+
+    ConnectionStatus:
+      type: string
+      enum: [ACTIVE, DEGRADED, AUTH_EXPIRED, DISABLED]
+
+    Connection:
+      type: object
+      required: [id, name, type, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string, examples: [box, sharepoint, sftp, rest, mcp] }
+        status: { $ref: '#/components/schemas/ConnectionStatus' }
+        owner: { type: string, format: email }
+        config:
+          type: object
+          additionalProperties: true
+          description: Non-secret settings only.
+        credentialRef: { type: string, description: ARN of the secret; never the secret itself }
+        lastTestedAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    ConnectionCreate:
+      type: object
+      required: [name, type, credentialRef]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        type: { type: string }
+        config: { type: object, additionalProperties: true }
+        credentialRef: { type: string }
+        owner: { type: string, format: email }
+
+    ConnectionTest:
+      type: object
+      required: [ok, latencyMs]
+      properties:
+        ok: { type: boolean }
+        latencyMs: { type: integer }
+        errorCode: { type: [string, 'null'] }
+        message: { type: [string, 'null'] }
+        checkedAt: { type: string, format: date-time }
+
+    Operation:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED] }
+        progress: { type: number, minimum: 0, maximum: 100 }
+        resultRef: { type: [string, 'null'] }
+        error: { $ref: '#/components/schemas/Problem' }
+
+    Ingestion:
+      type: object
+      required: [id, name, connectionId, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        connectionId: { type: string }
+        targetUrn: { type: string }
+        status: { type: string, enum: [DRAFT, ACTIVE, PAUSED, ERROR] }
+        schedule:
+          type: object
+          properties:
+            cron: { type: string }
+            timezone: { type: string }
+        currentRevision: { type: integer }
+        lastRun: { $ref: '#/components/schemas/Run' }
+
+    IngestionCreate:
+      type: object
+      required: [name, connectionId, targetUrn, source]
+      properties:
+        name: { type: string }
+        connectionId: { type: string }
+        targetUrn: { type: string }
+        source:
+          type: object
+          required: [resource]
+          properties:
+            resource: { type: string }
+            include: { type: array, items: { type: string } }
+        schedule:
+          type: object
+          properties:
+            cron: { type: string }
+            timezone: { type: string, default: UTC }
+            catchup: { type: string, enum: [none, one, all], default: none }
+        quality:
+          type: object
+          properties:
+            contractId: { type: string }
+            onFailure: { type: string, enum: [quarantine, fail], default: quarantine }
+
+    RunStatus:
+      type: string
+      enum: [QUEUED, ADMITTED, SCHEDULED, RUNNING, SUCCEEDED, FAILED, TIMED_OUT, CANCELLED]
+
+    Run:
+      type: object
+      required: [id, status, kind]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [ingestion, pipeline] }
+        status: { $ref: '#/components/schemas/RunStatus' }
+        ingestionId: { type: string }
+        pipelineId: { type: string }
+        logicalDate: { type: string, format: date-time }
+        dataIntervalStart: { type: string, format: date-time }
+        dataIntervalEnd: { type: string, format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        endedAt: { type: [string, 'null'], format: date-time }
+        attempt: { type: integer }
+        metrics:
+          type: object
+          properties:
+            bytes: { type: integer }
+            records: { type: integer }
+            durationSeconds: { type: number }
+        error:
+          type: [object, 'null']
+          properties:
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+        links:
+          type: object
+          properties:
+            self: { type: string }
+            events: { type: string }
+            cancel: { type: string }
+
+    Classification:
+      type: string
+      enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED]
+
+    Asset:
+      type: object
+      required: [urn, name, kind, classification]
+      properties:
+        urn: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [dataset, document, dashboard, model] }
+        domain: { type: string }
+        owner: { type: string }
+        classification: { $ref: '#/components/schemas/Classification' }
+        lifecycleState: { type: string, enum: [draft, active, deprecated, archived] }
+        certified: { type: boolean }
+        description: { type: string }
+
+    Column:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string }
+        type: { type: string, examples: ['decimal(18,2)'] }
+        nullable: { type: boolean }
+        pii: { type: boolean }
+        classification: { $ref: '#/components/schemas/Classification' }
+        description: { type: string }
+
+    Dataset:
+      allOf:
+        - $ref: '#/components/schemas/Asset'
+        - type: object
+          properties:
+            layer: { type: string, enum: [raw, bronze, silver, gold, sandbox] }
+            columns:
+              type: array
+              items: { $ref: '#/components/schemas/Column' }
+            rowCount: { type: integer }
+            sizeBytes: { type: integer }
+            lastUpdatedAt: { type: string, format: date-time }
+            freshnessSlaHours: { type: integer }
+            slaStatus: { type: string, enum: [OK, AT_RISK, MISSED] }
+            qualityScore: { type: number, minimum: 0, maximum: 100 }
+
+    LineageNode:
+      type: object
+      properties:
+        urn: { type: string }
+        name: { type: string }
+        kind: { type: string }
+        classification: { $ref: '#/components/schemas/Classification' }
+
+    LineageEdge:
+      type: object
+      properties:
+        from: { type: string }
+        to: { type: string }
+        jobUrn: { type: string }
+        runId: { type: string }
+        columnMap:
+          type: object
+          additionalProperties: { type: string }
+
+    AccessRequestCreate:
+      type: object
+      required: [resourceUrn, action, purpose, durationHours]
+      properties:
+        resourceUrn: { type: string }
+        columns:
+          type: array
+          items: { type: string }
+          description: Empty means all visible columns.
+        action: { type: string, enum: [read, query, export] }
+        purpose: { type: string, maxLength: 500 }
+        durationHours: { type: integer, minimum: 1, maximum: 720 }
+        ticketRef: { type: string }
+
+    AccessRequest:
+      type: object
+      required: [id, status, resourceUrn]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [DRAFT, SUBMITTED, IN_REVIEW, APPROVED, DENIED, PROVISIONED, EXPIRED, REVOKED]
+        requester: { type: string }
+        resourceUrn: { type: string }
+        action: { type: string }
+        purpose: { type: string }
+        approver: { type: [string, 'null'] }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }

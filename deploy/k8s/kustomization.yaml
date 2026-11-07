@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: meridian
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.example.yaml
+  - pvc.yaml
+  - serviceaccounts.yaml
+  - api.yaml
+  - worker.yaml
+  - scheduler.yaml
+  - web.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - app-networkpolicy.yaml
+images:
+  - name: ghcr.io/REPLACE_ORG/meridian-api
+    newName: ghcr.io/REPLACE_ORG/meridian-api
+    newTag: 0.1.0
+  - name: ghcr.io/REPLACE_ORG/meridian-web
+    newName: ghcr.io/REPLACE_ORG/meridian-web
+    newTag: 0.1.0

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: meridian-config
+  namespace: meridian
+data:
+  MERIDIAN_ENV: production
+  MERIDIAN_AUTH_MODE: oidc
+  MERIDIAN_OIDC_ISSUER: https://login.microsoftonline.com/REPLACE_TENANT/v2.0
+  MERIDIAN_OIDC_AUDIENCE: api://meridian
+  MERIDIAN_OIDC_JWKS_URL: https://login.microsoftonline.com/REPLACE_TENANT/discovery/v2.0/keys
+  MERIDIAN_STORAGE_BACKEND: s3
+  MERIDIAN_S3_BUCKET: REPLACE-meridian-lake
+  MERIDIAN_S3_REGION: us-east-1
+  MERIDIAN_LOG_DIR: /data/logs
+  MERIDIAN_FILE_ROOTS: /data
+  MERIDIAN_SEED_DEMO: "false"
+  MERIDIAN_CORS_ORIGINS: https://meridian.example.com
+  MERIDIAN_OTEL_ENABLED: "true"
+  MERIDIAN_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc.cluster.local:4318
+  MERIDIAN_WORKER_CONCURRENCY: "4"
+  MERIDIAN_TASK_MAX_ATTEMPTS: "3"
+  MERIDIAN_LOG_LEVEL: INFO

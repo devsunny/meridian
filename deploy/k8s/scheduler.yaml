@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meridian-scheduler
+  namespace: meridian
+  labels: { app.kubernetes.io/name: meridian-scheduler, app.kubernetes.io/part-of: meridian }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: meridian-scheduler }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: meridian-scheduler, app.kubernetes.io/part-of: meridian }
+    spec:
+      serviceAccountName: meridian-platform
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: scheduler
+          image: ghcr.io/REPLACE_ORG/meridian-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "meridian.engine.scheduler"]
+          envFrom:
+            - configMapRef: { name: meridian-config }
+            - secretRef: { name: meridian-secrets }
+          env:
+            - { name: MERIDIAN_SERVICE_NAME, value: meridian-scheduler }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: meridian-data }
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
