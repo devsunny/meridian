@@ -201,9 +201,15 @@ def main() -> None:
     configure_telemetry("meridian-worker")
     init_db(seed=True)
     worker_id = _worker_id()
+    concurrency = max(1, settings.worker_concurrency)
+    if settings.is_sqlite and concurrency > 1:
+        # SQLite has no row-level SKIP LOCKED. Multiple threads can select the same
+        # queued task, so the local profile is deliberately single-threaded.
+        logger.warning("sqlite_worker_concurrency_forced_to_one", extra={"requested": concurrency})
+        concurrency = 1
     logger.info(
         "worker_started",
-        extra={"worker_id": worker_id, "concurrency": settings.worker_concurrency, "db": settings.database_url.split("@")[-1]},
+        extra={"worker_id": worker_id, "concurrency": concurrency, "db": settings.database_url.split("@")[-1]},
     )
     recover_orphaned_tasks()
 
@@ -215,7 +221,7 @@ def main() -> None:
         if hasattr(signal, signal_name):
             signal.signal(getattr(signal, signal_name), handle_signal)
     try:
-        run_loop(worker_id, max(1, settings.worker_concurrency))
+        run_loop(worker_id, concurrency)
     finally:
         logger.info("worker_stopped", extra={"worker_id": worker_id})
 

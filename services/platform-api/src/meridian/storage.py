@@ -71,7 +71,13 @@ class LocalStorage(Storage):
 
     def _path(self, key: str) -> Path:
         path = (self.root / key.lstrip("/\\")).resolve()
-        if not str(path).startswith(str(self.root)):
+        root = os.path.normcase(os.path.abspath(self.root))
+        candidate = os.path.normcase(os.path.abspath(path))
+        try:
+            inside = os.path.commonpath([root, candidate]) == root
+        except ValueError:
+            inside = False
+        if not inside:
             raise ValueError("storage key escapes root")
         return path
 

@@ -4,7 +4,7 @@ import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..audit import emit_run_event
@@ -257,22 +257,38 @@ def claim_task(session: Session, worker_id: str) -> TaskRun | None:
         return None
     run = session.get(JobRun, task.job_run_id)
     if not run or run.status == "CANCELLED":
-        task.status = "CANCELLED"
-        task.ended_at = now
+        session.execute(
+            update(TaskRun)
+            .where(TaskRun.id == task.id, TaskRun.status == "QUEUED")
+            .values(status="CANCELLED", ended_at=now)
+        )
         session.commit()
         return None
     if run.pause_requested:
         # Do not consume the task; the run will be resumed by the operator.
         session.rollback()
         return None
-    task.status = "RUNNING"
-    task.worker_id = worker_id
-    task.attempt += 1
-    task.started_at = now
+    # This conditional UPDATE is the cross-process lease. On PostgreSQL the row is
+    # already locked; on SQLite it closes the gap where several readers can select
+    # the same QUEUED row before either writer commits.
+    claimed = session.execute(
+        update(TaskRun)
+        .where(TaskRun.id == task.id, TaskRun.status == "QUEUED")
+        .values(
+            status="RUNNING",
+            worker_id=worker_id,
+            attempt=TaskRun.attempt + 1,
+            started_at=now,
+        )
+    )
+    if claimed.rowcount != 1:
+        session.rollback()
+        return None
     run.status = "RUNNING"
     run.started_at = run.started_at or now
-    session.add_all([task, run])
+    session.add(run)
     session.commit()
+    session.refresh(task)
     return task
 
 
